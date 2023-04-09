@@ -64,15 +64,24 @@ pub enum ItemId {
     Remote = 0x0202,
     OffReason1 = 0x0205,
     OffReason2 = 0x0207,
+    BatteryVoltageSense = 0x2002,
+    BatteryTemperatureSense = 0x2003,
+    NetworkMode = 0x200e,
     TotalChargeCurrent = 0x2013,
+    TotalDCInputPower = 0x2027,
     BatteryTemperature = 0xedec,
     SystemYield = 0xeddd,
     ChargerTemperature = 0xeddb,
     ChargerCurrent = 0xedd7,
     ChargerVoltage = 0xedd5,
+    YieldToday = 0xedd3,
+    MaximumPowerToday = 0xedd2,
+    YieldYesterday = 0xedd1,
+    MaximumPowerYesterday = 0xedd0,
     PanelPower = 0xedbc,
     PanelVoltage = 0xedbb,
     PanelCurrent = 0xedbd,
+    LoadVoltage = 0xeda9,
     LoadCurrent = 0xedad,
     BatteryMaximumCurrent = 0xedf0,
 }
@@ -197,15 +206,35 @@ impl<'a> FrameDe<'a> {
         Ok(())
     }
 
-    pub fn push_slice(&mut self, value: &[u8]) -> Result<(), VeDirectError> {
-        for c in value.iter() {
-            self.push(*c)?;
-        }
-        Ok(())
-    }
-
     pub fn done(&self) -> bool {
         self.state == State::Start && !self.frame.data.is_empty()
+    }
+
+    /*
+       pub fn read<R: std::io::Read>(&mut self, read: R) -> bool {
+           let mut buf = [0];
+           read.read_exact(&mut buf)?;
+           Ok(self.done() && self.frame.valid())
+       }
+    */
+}
+
+impl TryFrom<&[u8]> for Frame {
+    type Error = VeDirectError;
+
+    fn try_from(value: &[u8]) -> Result<Frame, VeDirectError> {
+        let mut f = Frame::default();
+        let mut d = f.de();
+        for c in value.iter() {
+            d.push(*c)?;
+        }
+        if !d.done() {
+            Err(VeDirectError::Length)
+        } else if !f.valid() {
+            Err(VeDirectError::Checksum)
+        } else {
+            Ok(f)
+        }
     }
 }
 
@@ -239,21 +268,10 @@ impl<'a> Iterator for FrameSer<'a> {
     }
 }
 
-impl From<&Frame> for Vec<u8> {
-    fn from(value: &Frame) -> Self {
-        let s = value.ser();
-        let mut v = Self::new();
-        for c in s {
-            v.push(c);
-        }
-        v
-    }
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Response<'a> {
-    Done(&'a [u8]),
-    Unknown(&'a [u8]),
+pub enum Response {
+    Done(Value),
+    Unknown(Value),
     Error(ErrorId),
     Ping {
         flags: u8,
@@ -263,7 +281,7 @@ pub enum Response<'a> {
     Update {
         item: ItemId,
         flags: Flags,
-        value: &'a [u8],
+        value: Value,
     },
 }
 
@@ -271,17 +289,17 @@ fn bcd_to_bin(c: u8) -> u8 {
     (c & 0xf) + 10 * (c >> 4)
 }
 
-impl<'a> TryFrom<&'a Frame> for Response<'a> {
+impl TryFrom<&Frame> for Response {
     type Error = VeDirectError;
 
-    fn try_from(frame: &'a Frame) -> Result<Self, VeDirectError> {
+    fn try_from(frame: &Frame) -> Result<Self, VeDirectError> {
         let data = &frame.data[1..frame.data.len() - 1];
         if !frame.valid() {
             return Err(VeDirectError::Checksum);
         }
         Ok(match ResponseId::try_from(frame.data[0])? {
-            ResponseId::Done => Self::Done(data),
-            ResponseId::Unknown => Self::Unknown(data),
+            ResponseId::Done => Self::Done(Value::guess(data)),
+            ResponseId::Unknown => Self::Unknown(Value::guess(data)),
             ResponseId::Error => Self::Error(u16::from_le_bytes(data[..2].try_into()?).try_into()?),
             ResponseId::Ping => Self::Ping {
                 flags: data[1] >> 4,
@@ -291,14 +309,14 @@ impl<'a> TryFrom<&'a Frame> for Response<'a> {
             ResponseId::Get | ResponseId::Set | ResponseId::Async => Self::Update {
                 item: u16::from_le_bytes(data[..2].try_into()?).try_into()?,
                 flags: Flags::from_bits(data[2]).ok_or(VeDirectError::Flags)?,
-                value: &data[3..],
+                value: Value::guess(&data[3..]),
             },
         })
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum Command<'a> {
+pub enum Command {
     Boot,
     Ping,
     Version,
@@ -311,23 +329,19 @@ pub enum Command<'a> {
     Set {
         item: ItemId,
         flags: Flags,
-        value: &'a [u8],
+        value: Value,
     },
     Async {
         item: ItemId,
         flags: Flags,
-        value: &'a [u8],
+        value: Value,
     },
 }
 
-impl<'a> Command<'a> {
-    //pub fn get(i: ItemId) -> Command<'a> {}
-}
-
-impl<'a> From<&'a Command<'a>> for Frame {
-    fn from(value: &'a Command) -> Self {
+impl Command {
+    pub fn as_frame(&self) -> Frame {
         let mut f = Frame::default();
-        f.data.push(match &value {
+        f.data.push(match &self {
             Command::Boot => CommandId::Boot,
             Command::Ping => CommandId::Ping,
             Command::Version => CommandId::Version,
@@ -337,7 +351,7 @@ impl<'a> From<&'a Command<'a>> for Frame {
             Command::Set { .. } => CommandId::Set,
             Command::Async { .. } => CommandId::Async,
         } as _);
-        match &value {
+        match &self {
             Command::Get { item, flags } => {
                 f.data.extend_from_slice(&(*item as u16).to_le_bytes());
                 f.data.push(flags.bits());
@@ -345,18 +359,71 @@ impl<'a> From<&'a Command<'a>> for Frame {
             Command::Set { item, flags, value } => {
                 f.data.extend_from_slice(&(*item as u16).to_le_bytes());
                 f.data.push(flags.bits());
-                f.data.extend_from_slice(value);
+                value.ser(&mut f.data);
             }
             Command::Async { item, flags, value } => {
                 f.data.extend_from_slice(&(*item as u16).to_le_bytes());
                 f.data.push(flags.bits());
-                f.data.extend_from_slice(value);
+                value.ser(&mut f.data);
             }
             _ => {}
         }
-        let check = f.data.iter().fold(0x55u8, |a, e| a.wrapping_sub(*e));
+        let check = f.data.iter().fold(0x55u8, |a, &e| a.wrapping_sub(e));
         f.data.push(check);
         f
+    }
+
+    pub const fn get(item: ItemId) -> Command {
+        Self::Get {
+            item,
+            flags: Flags::empty(),
+        }
+    }
+}
+
+impl From<&Command> for Frame {
+    fn from(value: &Command) -> Self {
+        value.as_frame()
+    }
+}
+
+#[derive(Default, Debug, Clone, Eq, PartialEq, Hash)]
+pub enum Value {
+    #[default]
+    Empty,
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    Ascii(String),
+    Other(Vec<u8>),
+}
+
+impl Value {
+    pub fn guess(value: &[u8]) -> Self {
+        match value.len() {
+            0 => Self::Empty,
+            1 => Self::U8(value[0]),
+            2 => Self::U16(u16::from_le_bytes(value.try_into().unwrap())),
+            4 => Self::U32(u32::from_le_bytes(value.try_into().unwrap())),
+            _ => Self::Other(value.into()),
+        }
+    }
+
+    fn ser(&self, vec: &mut Vec<u8>) {
+        match self {
+            Self::Empty => {}
+            Self::U8(v) => vec.push(*v),
+            Self::I8(v) => vec.push(*v as _),
+            Self::U16(v) => vec.extend(v.to_le_bytes()),
+            Self::I16(v) => vec.extend(v.to_le_bytes()),
+            Self::U32(v) => vec.extend(v.to_le_bytes()),
+            Self::I32(v) => vec.extend(v.to_le_bytes()),
+            Self::Ascii(v) => vec.extend(v.as_bytes()),
+            Self::Other(v) => vec.extend(v),
+        }
     }
 }
 
@@ -380,7 +447,7 @@ mod tests {
             Command::Set {
                 item: ItemId::BatteryMaximumCurrent,
                 flags: Flags::empty(),
-                value: &100u16.to_le_bytes(),
+                value: Value::U16(100),
             },
             b":8F0ED0064000C\n",
             b":8F0ED0064000C\n",
@@ -391,26 +458,17 @@ mod tests {
     ];
 
     #[test]
-    fn de() {
-        for (_, cmd, resp) in EXAMPLES.iter() {
-            let mut f = Frame::default();
-            assert!(f.push_slice(*cmd).unwrap());
-            println!("{:?}", f);
-            assert!(f.push_slice(*resp).unwrap());
-            println!("{:?}", f);
-            let r = Response::try_from(&f).unwrap();
-            println!("{:?}", r);
-        }
-    }
+    fn serde() {
+        for (cmd, req, resp) in EXAMPLES.iter() {
+            let v = cmd.as_frame().ser().collect();
+            println!("{cmd:?}: {:?}", String::from_utf8(v).unwrap());
 
-    #[test]
-    fn ser() {
-        for (cmd, _, _) in EXAMPLES.iter() {
-            let mut f = Frame::from(cmd);
+            let f = Frame::try_from(*req).unwrap();
             println!("{:?}", f);
-            let v: Vec<u8> = (&mut f).try_into().unwrap();
-            let s: String = v.iter().map(|c| *c as char).collect();
-            println!("{:?}", s);
+
+            let f = Frame::try_from(*resp).unwrap();
+            let r = Response::try_from(&f).unwrap();
+            println!("{f:?}: {r:?}");
         }
     }
 }

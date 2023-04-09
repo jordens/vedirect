@@ -34,19 +34,19 @@ fn main() -> anyhow::Result<()> {
     let every = args.opt_value_from_str("--every")?.unwrap_or(0);
     */
 
-    let ping: vedirect::Frame = (&vedirect::Command::Ping {}).try_into()?;
-    dev.write_all(&Vec::<u8>::from(&ping))?;
+    let ping: vedirect::Frame = (&vedirect::Command::Ping).try_into()?;
+    dev.write_all(&ping.ser().collect::<Vec<u8>>())?;
 
     loop {
         let mut ve = vedirect::Frame::default();
         let valid = {
-            let mut buf = [0; 64];
+            let mut buf = [0; 1];
             let mut de = ve.de();
             loop {
                 match dev.read(&mut buf) {
                     Ok(n) => {
                         if n > 0 {
-                            de.push_slice(&buf[..n])?;
+                            de.push(buf[0])?;
                             if de.done() {
                                 break ve.valid();
                             }
@@ -60,7 +60,6 @@ fn main() -> anyhow::Result<()> {
             }
         };
         if valid {
-            println!("{:?}", &ve);
             let r: Result<vedirect::Response, vedirect::VeDirectError> = (&ve).try_into();
             match r {
                 Ok(r) => println!("{:?}", r),
@@ -69,9 +68,5 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ve.ping()?;
-    // info!("frame: {:?}", ve.get(Item::Product)
-    // let len = dev.read(&mut buf)?;
-    // debug!("frame: {:X?}", &buf[..len]);
     Ok(())
 }
