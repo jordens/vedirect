@@ -1,12 +1,11 @@
 use core::array::TryFromSliceError;
 use core::convert::TryFrom;
-use heapless::Vec;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use thiserror::Error;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-enum CommandId {
+pub enum CommandId {
     Boot = 0,
     Ping = 1,
     Version = 3,
@@ -19,7 +18,7 @@ enum CommandId {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-enum ResponseId {
+pub enum ResponseId {
     Done = 1,
     Unknown = 3,
     Error = 4,
@@ -31,7 +30,7 @@ enum ResponseId {
 
 bitflags::bitflags! {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct Flags: u8 {
+pub struct Flags: u8 {
     const UnknownId = 0x01;
     const NotSupported = 0x02;
     const ParameterError = 0x04;
@@ -40,21 +39,21 @@ struct Flags: u8 {
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-enum ErrorId {
+pub enum ErrorId {
     Checksum = 0xAAAA,
     Boot = 0,
 }
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-enum ProductId {
+pub enum ProductId {
     BlueSolarMppt70v15a = 0x0300,
     SmartSolarMppt100v20a = 0xa066,
 }
 
 #[repr(u16)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
-enum ItemId {
+pub enum ItemId {
     Product = 0x0100,
     Group = 0x0104,
     Serial = 0x010a,
@@ -65,6 +64,7 @@ enum ItemId {
     Remote = 0x0202,
     OffReason1 = 0x0205,
     OffReason2 = 0x0207,
+    TotalChargeCurrent = 0x2013,
     BatteryTemperature = 0xedec,
     SystemYield = 0xeddd,
     ChargerTemperature = 0xeddb,
@@ -78,7 +78,7 @@ enum ItemId {
 }
 
 #[derive(Error, Debug)]
-enum VeDirectError {
+pub enum VeDirectError {
     #[error("Invalid hex data")]
     Hex,
     #[error("Too mich or too little data")]
@@ -123,119 +123,135 @@ fn hex(c: u8) -> Result<u8, VeDirectError> {
 enum State {
     #[default]
     Start,
-    Id,
-    High,
     Low,
+    High,
 }
 
 #[derive(Default, Clone, Eq, PartialEq, Debug)]
-struct Frame {
-    data: Vec<u8, 64>,
-    check: u8,
-    id: u8,
-    pending: u8,
-    state: State,
-    pos: usize,
+pub struct Frame {
+    data: Vec<u8>,
 }
 
 impl Frame {
+    pub fn checksum(&self) -> u8 {
+        self.data.iter().fold(0u8, |a, &e| a.wrapping_add(e))
+    }
+
+    pub fn valid(&self) -> bool {
+        self.checksum() == 0x55
+    }
+
+    pub fn de(&mut self) -> FrameDe {
+        FrameDe {
+            frame: self,
+            state: State::Start,
+        }
+    }
+
+    pub fn ser(&self) -> FrameSer {
+        FrameSer {
+            frame: self,
+            pos: 0,
+            state: State::Start,
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Debug)]
+pub struct FrameDe<'a> {
+    frame: &'a mut Frame,
+    state: State,
+}
+
+#[derive(Eq, PartialEq, Debug)]
+pub struct FrameSer<'a> {
+    frame: &'a Frame,
+    pos: usize,
+    state: State,
+}
+
+impl<'a> FrameDe<'a> {
     pub fn push(&mut self, c: u8) -> Result<(), VeDirectError> {
         match self.state {
             State::Start => {
                 if c == b':' {
-                    self.state = State::Id;
-                }
-            }
-            State::Id => {
-                self.id = nibble(c)?;
-                self.data.clear();
-                self.check = self.id;
-                self.state = State::High;
-            }
-            State::High => {
-                if c == b'\n' {
-                    // self.data.pop().ok_or(VeDirectError::Checksum)?;
-                    self.state = State::Start;
-                } else {
-                    self.pending = nibble(c)? << 4;
+                    self.frame.data.clear();
+                    self.frame.data.push(0);
                     self.state = State::Low;
                 }
             }
             State::Low => {
-                let x = self.pending | nibble(c)?;
-                self.data.push(x).or(Err(VeDirectError::Length))?;
-                self.check = self.check.wrapping_add(x);
+                let x = self.frame.data.last_mut().unwrap();
+                *x |= nibble(c)?;
                 self.state = State::High;
+            }
+            State::High => {
+                if c == b'\n' {
+                    self.state = State::Start;
+                } else {
+                    self.frame.data.push(nibble(c)? << 4);
+                    self.state = State::Low;
+                }
             }
         };
         Ok(())
     }
 
-    pub fn valid(&self) -> bool {
-        self.state == State::Start && self.check == 0x55
+    pub fn push_slice(&mut self, value: &[u8]) -> Result<(), VeDirectError> {
+        for c in value.iter() {
+            self.push(*c)?;
+        }
+        Ok(())
     }
 
-    pub fn pop(&mut self) -> Result<u8, VeDirectError> {
-        Ok(match self.state {
+    pub fn done(&self) -> bool {
+        self.state == State::Start && !self.frame.data.is_empty()
+    }
+}
+
+impl<'a> Iterator for FrameSer<'a> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        Some(match self.state {
             State::Start => {
-                self.state = State::Id;
-                b':'
-            }
-            State::Id => {
-                self.pos = 0;
-                self.state = State::High;
-                hex(self.id)?
-            }
-            State::High => {
-                if self.pos == self.data.len() {
-                    // assert!(self.check == 0);
-                    self.state = State::Start;
-                    b'\n'
-                } else {
-                    // self.check = self.check.wrapping_sub(self.data[self.pos]);
-                    self.state = State::Low;
-                    hex(self.data[self.pos] >> 4)?
+                if self.pos > 0 {
+                    return None;
                 }
+                self.state = State::Low;
+                b':'
             }
             State::Low => {
                 self.state = State::High;
                 self.pos += 1;
-                hex(self.data[self.pos - 1] & 0xf)?
+                hex(self.frame.data[self.pos - 1] & 0xf).unwrap()
+            }
+            State::High => {
+                if self.pos == self.frame.data.len() {
+                    self.state = State::Start;
+                    b'\n'
+                } else {
+                    self.state = State::Low;
+                    hex(self.frame.data[self.pos] >> 4).unwrap()
+                }
             }
         })
     }
 }
 
-impl TryFrom<&[u8]> for Frame {
-    type Error = VeDirectError;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let mut f = Frame::default();
-        for c in value.iter() {
-            f.push(*c)?;
-        }
-        Ok(f)
-    }
-}
-
-impl TryFrom<&mut Frame> for Vec<u8, 64> {
-    type Error = VeDirectError;
-
-    fn try_from(value: &mut Frame) -> Result<Self, Self::Error> {
+impl From<&Frame> for Vec<u8> {
+    fn from(value: &Frame) -> Self {
+        let s = value.ser();
         let mut v = Self::new();
-        loop {
-            let c = value.pop()?;
-            v.push(c).or(Err(VeDirectError::Length))?;
-            if c == b'\n' {
-                break;
-            }
+        for c in s {
+            v.push(c);
         }
-        Ok(v)
+        v
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-enum Response<'a> {
+pub enum Response<'a> {
     Done(&'a [u8]),
     Unknown(&'a [u8]),
     Error(ErrorId),
@@ -251,7 +267,7 @@ enum Response<'a> {
     },
 }
 
-fn u8_to_dec(c: u8) -> u8 {
+fn bcd_to_bin(c: u8) -> u8 {
     (c & 0xf) + 10 * (c >> 4)
 }
 
@@ -259,18 +275,18 @@ impl<'a> TryFrom<&'a Frame> for Response<'a> {
     type Error = VeDirectError;
 
     fn try_from(frame: &'a Frame) -> Result<Self, VeDirectError> {
-        let data = &frame.data[..frame.data.len() - 1];
+        let data = &frame.data[1..frame.data.len() - 1];
         if !frame.valid() {
             return Err(VeDirectError::Checksum);
         }
-        Ok(match ResponseId::try_from(frame.id)? {
+        Ok(match ResponseId::try_from(frame.data[0])? {
             ResponseId::Done => Self::Done(data),
             ResponseId::Unknown => Self::Unknown(data),
             ResponseId::Error => Self::Error(u16::from_le_bytes(data[..2].try_into()?).try_into()?),
             ResponseId::Ping => Self::Ping {
                 flags: data[1] >> 4,
                 major: data[1] & 0xf,
-                minor: u8_to_dec(data[0]),
+                minor: bcd_to_bin(data[0]),
             },
             ResponseId::Get | ResponseId::Set | ResponseId::Async => Self::Update {
                 item: u16::from_le_bytes(data[..2].try_into()?).try_into()?,
@@ -282,7 +298,7 @@ impl<'a> TryFrom<&'a Frame> for Response<'a> {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-enum Command<'a> {
+pub enum Command<'a> {
     Boot,
     Ping,
     Version,
@@ -304,53 +320,43 @@ enum Command<'a> {
     },
 }
 
-impl<'a> TryFrom<&'a Command<'a>> for Frame {
-    type Error = VeDirectError;
+impl<'a> Command<'a> {
+    //pub fn get(i: ItemId) -> Command<'a> {}
+}
 
-    fn try_from(value: &'a Command) -> Result<Self, VeDirectError> {
+impl<'a> From<&'a Command<'a>> for Frame {
+    fn from(value: &'a Command) -> Self {
         let mut f = Frame::default();
-        match value {
-            Command::Boot => f.id = CommandId::Boot as _,
-            Command::Ping => f.id = CommandId::Ping as _,
-            Command::Version => f.id = CommandId::Version as _,
-            Command::Product => f.id = CommandId::Product as _,
-            Command::Restart => f.id = CommandId::Restart as _,
+        f.data.push(match &value {
+            Command::Boot => CommandId::Boot,
+            Command::Ping => CommandId::Ping,
+            Command::Version => CommandId::Version,
+            Command::Product => CommandId::Product,
+            Command::Restart => CommandId::Restart,
+            Command::Get { .. } => CommandId::Get,
+            Command::Set { .. } => CommandId::Set,
+            Command::Async { .. } => CommandId::Async,
+        } as _);
+        match &value {
             Command::Get { item, flags } => {
-                f.id = CommandId::Get as _;
-                f.data
-                    .extend_from_slice(&(*item as u16).to_le_bytes())
-                    .or(Err(VeDirectError::Length))?;
-                f.data.push(flags.bits()).or(Err(VeDirectError::Length))?;
+                f.data.extend_from_slice(&(*item as u16).to_le_bytes());
+                f.data.push(flags.bits());
             }
             Command::Set { item, flags, value } => {
-                f.id = CommandId::Set as _;
-                f.data
-                    .extend_from_slice(&(*item as u16).to_le_bytes())
-                    .or(Err(VeDirectError::Length))?;
-                f.data.push(flags.bits()).or(Err(VeDirectError::Length))?;
-                f.data
-                    .extend_from_slice(value)
-                    .or(Err(VeDirectError::Length))?;
+                f.data.extend_from_slice(&(*item as u16).to_le_bytes());
+                f.data.push(flags.bits());
+                f.data.extend_from_slice(value);
             }
             Command::Async { item, flags, value } => {
-                f.id = CommandId::Async as _;
-                f.data
-                    .extend_from_slice(&(*item as u16).to_le_bytes())
-                    .or(Err(VeDirectError::Length))?;
-                f.data.push(flags.bits()).or(Err(VeDirectError::Length))?;
-                f.data
-                    .extend_from_slice(value)
-                    .or(Err(VeDirectError::Length))?;
+                f.data.extend_from_slice(&(*item as u16).to_le_bytes());
+                f.data.push(flags.bits());
+                f.data.extend_from_slice(value);
             }
+            _ => {}
         }
-        f.check = 0x55;
-        let check = f
-            .data
-            .iter()
-            .fold(f.check.wrapping_sub(f.id), |a, e| a.wrapping_sub(*e));
-        f.data.push(check).or(Err(VeDirectError::Length))?;
-
-        Ok(f)
+        let check = f.data.iter().fold(0x55u8, |a, e| a.wrapping_sub(*e));
+        f.data.push(check);
+        f
     }
 }
 
@@ -387,12 +393,11 @@ mod tests {
     #[test]
     fn de() {
         for (_, cmd, resp) in EXAMPLES.iter() {
-            let f = Frame::try_from(*cmd).unwrap();
+            let mut f = Frame::default();
+            assert!(f.push_slice(*cmd).unwrap());
             println!("{:?}", f);
-            assert!(f.valid());
-            let f = Frame::try_from(*resp).unwrap();
+            assert!(f.push_slice(*resp).unwrap());
             println!("{:?}", f);
-            assert!(f.valid());
             let r = Response::try_from(&f).unwrap();
             println!("{:?}", r);
         }
@@ -401,10 +406,9 @@ mod tests {
     #[test]
     fn ser() {
         for (cmd, _, _) in EXAMPLES.iter() {
-            let mut f = Frame::try_from(cmd).unwrap();
+            let mut f = Frame::from(cmd);
             println!("{:?}", f);
-            assert!(f.valid());
-            let v: Vec<u8, 64> = (&mut f).try_into().unwrap();
+            let v: Vec<u8> = (&mut f).try_into().unwrap();
             let s: String = v.iter().map(|c| *c as char).collect();
             println!("{:?}", s);
         }
