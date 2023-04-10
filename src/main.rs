@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
     .data_bits(serialport::DataBits::Eight)
     .stop_bits(serialport::StopBits::One)
     .parity(serialport::Parity::None)
-    .timeout(Duration::from_secs(0))
+    .timeout(Duration::from_millis(1000))
     .open()?;
 
     /*
@@ -36,25 +36,34 @@ fn main() -> anyhow::Result<()> {
 
     let mut cache = std::collections::HashMap::new();
 
-    let ping: vedirect::Frame = (&vedirect::Command::Ping).try_into()?;
-    dev.write_all(&ping.ser().collect::<Vec<u8>>())?;
+    let ping = vedirect::Frame::try_from(&vedirect::Command::Ping)?
+        .ser()
+        .collect::<Vec<u8>>();
+    let mut next = Instant::now();
 
     loop {
+        if next <= Instant::now() {
+            println!("{:?}", cache);
+            cache.clear();
+            dev.write_all(&ping)?;
+            next += Duration::from_secs(10);
+        }
+
         let mut ve = vedirect::Frame::default();
-        let valid = {
-            let mut buf = [0; 1];
+        {
             let mut de = ve.de();
+            let mut buf = [0; 1];
             loop {
                 match dev.read(&mut buf) {
                     Ok(n) => {
                         if n > 0 {
                             if let Err(e) = de.push(buf[0]) {
-                                println!("{:?}", e);
+                                warn!("invalid data `{:?}`: {:?}", buf, e);
                             } else if de.done() {
-                                break ve.valid();
+                                break;
                             }
                         } else {
-                            return Ok(());
+                            return Ok(()); // EOF?
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
@@ -62,18 +71,20 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         };
-        if valid {
-            let r: Result<vedirect::Response, vedirect::VeDirectError> = (&ve).try_into();
-            match r {
+        if ve.valid() {
+            match vedirect::Response::try_from(&ve) {
                 Ok(r) => {
-                    println!("{:?}", r);
-                    if let vedirect::Response::Update { item, flags, value } = r {
+                    println!("frame: {:?}", r);
+                    if let vedirect::Response::Update {
+                        item, flags, value, ..
+                    } = r
+                    {
                         if flags.is_empty() {
                             cache.insert(item, value);
                         }
                     }
                 }
-                Err(e) => println!("{:?}", e),
+                Err(e) => warn!("invalid frame: `{:?}`", e),
             }
         }
     }

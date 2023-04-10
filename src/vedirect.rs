@@ -299,6 +299,7 @@ pub enum Response {
         minor: u8,
     },
     Update {
+        typ: ResponseId,
         item: ItemId,
         flags: Flags,
         value: Value,
@@ -326,7 +327,8 @@ impl TryFrom<&Frame> for Response {
                 major: data[1] & 0xf,
                 minor: bcd_to_bin(data[0]),
             },
-            ResponseId::Get | ResponseId::Set | ResponseId::Async => Self::Update {
+            typ @ (ResponseId::Get | ResponseId::Set | ResponseId::Async) => Self::Update {
+                typ,
                 item: u16::from_le_bytes(data[..2].try_into()?).try_into()?,
                 flags: Flags::from_bits(data[2]).ok_or(VeDirectError::Flags)?,
                 value: Value::guess(&data[3..]),
