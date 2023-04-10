@@ -4,7 +4,7 @@ use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use thiserror::Error;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
 pub enum CommandId {
     Boot = 0,
     Ping = 1,
@@ -17,7 +17,7 @@ pub enum CommandId {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
 pub enum ResponseId {
     Done = 1,
     Unknown = 3,
@@ -38,26 +38,27 @@ pub struct Flags: u8 {
 }
 
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
 pub enum ErrorId {
     Checksum = 0xAAAA,
     Boot = 0,
 }
 
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
 pub enum ProductId {
     BlueSolarMppt70v15a = 0x0300,
     SmartSolarMppt100v20a = 0xa066,
 }
 
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
 pub enum ItemId {
     Product = 0x0100,
     Group = 0x0104,
     Serial = 0x010a,
     Model = 0x010b,
+    Unknown0x010e = 0x010e,
     Capabilities = 0x0140,
     Mode = 0x0200,
     State = 0x0201,
@@ -73,6 +74,8 @@ pub enum ItemId {
     TotalChargeCurrent = 0x2013,
     TotalDCInputPower = 0x2027,
     SolarActivity = 0x2030,
+    TimeOfDay = 0x2031,
+    Unknown0xc6a3 = 0xc6a3,
     BatteryTemperature = 0xedec,
     SystemYield = 0xeddd,
     ChargerTemperature = 0xeddb,
@@ -91,10 +94,10 @@ pub enum ItemId {
     BatteryMaximumCurrent = 0xedf0,
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Copy, Clone)]
 pub enum VeDirectError {
-    #[error("Invalid hex data")]
-    Hex,
+    #[error("Invalid hex data `{0}`")]
+    Hex(u8),
     #[error("Too mich or too little data")]
     Length,
     #[error("Invalid of missing checksum")]
@@ -119,7 +122,7 @@ fn nibble(c: u8) -> Result<u8, VeDirectError> {
     } else if (b'a'..=b'f').contains(&c) {
         Ok(c - b'a' + 10)
     } else {
-        Err(VeDirectError::Hex)
+        Err(VeDirectError::Hex(c))
     }
 }
 
@@ -129,7 +132,7 @@ fn hex(c: u8) -> Result<u8, VeDirectError> {
     } else if (0xA..=0xF).contains(&c) {
         Ok(b'A' + (c - 10))
     } else {
-        Err(VeDirectError::Hex)
+        Err(VeDirectError::Hex(c))
     }
 }
 

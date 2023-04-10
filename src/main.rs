@@ -34,6 +34,8 @@ fn main() -> anyhow::Result<()> {
     let every = args.opt_value_from_str("--every")?.unwrap_or(0);
     */
 
+    let mut cache = std::collections::HashMap::new();
+
     let ping: vedirect::Frame = (&vedirect::Command::Ping).try_into()?;
     dev.write_all(&ping.ser().collect::<Vec<u8>>())?;
 
@@ -46,8 +48,9 @@ fn main() -> anyhow::Result<()> {
                 match dev.read(&mut buf) {
                     Ok(n) => {
                         if n > 0 {
-                            de.push(buf[0])?;
-                            if de.done() {
+                            if let Err(e) = de.push(buf[0]) {
+                                println!("{:?}", e);
+                            } else if de.done() {
                                 break ve.valid();
                             }
                         } else {
@@ -62,11 +65,18 @@ fn main() -> anyhow::Result<()> {
         if valid {
             let r: Result<vedirect::Response, vedirect::VeDirectError> = (&ve).try_into();
             match r {
-                Ok(r) => println!("{:?}", r),
+                Ok(r) => {
+                    println!("{:?}", r);
+                    if let vedirect::Response::Update { item, flags, value } = r {
+                        if flags.is_empty() {
+                            cache.insert(item, value);
+                        }
+                    }
+                }
                 Err(e) => println!("{:?}", e),
             }
         }
     }
 
-    Ok(())
+    // Ok(())
 }
