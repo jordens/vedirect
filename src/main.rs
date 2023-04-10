@@ -1,9 +1,25 @@
-use log::{debug, info, warn};
+use log::{info, warn};
 use std::io::prelude::*;
 use std::time::{Duration, Instant};
-use thiserror::Error;
 
 pub mod vedirect;
+
+type Cache = std::collections::HashMap<vedirect::ItemId, vedirect::Value>;
+
+fn idb(msg: &Cache, station: &str) -> String {
+    let mut s = String::new();
+    s.push_str("vedirect,station=");
+    s.push_str(station);
+    s.push(' ');
+    for (key, value) in msg.iter() {
+        s.push_str(&format!("{}", key));
+        s.push('=');
+        s.push_str(&format!("{}", value));
+        s.push(',');
+    }
+    s.pop();
+    s
+}
 
 fn main() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
@@ -22,7 +38,6 @@ fn main() -> anyhow::Result<()> {
     .timeout(Duration::from_millis(1000))
     .open()?;
 
-    /*
     let station = args
         .opt_value_from_str("--station")?
         .unwrap_or_else(|| "vedirect".to_string());
@@ -31,10 +46,9 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| "0.0.0.0:0".to_string()),
     )?;
     let target: Option<std::net::SocketAddr> = args.opt_value_from_str("--target")?;
-    let every = args.opt_value_from_str("--every")?.unwrap_or(0);
-    */
+    let every = args.opt_value_from_str("--every")?.unwrap_or(10);
 
-    let mut cache = std::collections::HashMap::new();
+    let mut cache = Cache::new();
 
     let ping = vedirect::Frame::try_from(&vedirect::Command::Ping)?
         .ser()
@@ -43,10 +57,16 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         if next <= Instant::now() {
-            println!("{:?}", cache);
-            cache.clear();
+            if !cache.is_empty() {
+                let s = idb(&cache, &station);
+                println!("{}", s);
+                cache.clear();
+                if let Some(t) = target.as_ref() {
+                    socket.send_to(s.as_bytes(), t)?;
+                }
+            }
             dev.write_all(&ping)?;
-            next += Duration::from_secs(10);
+            next += Duration::from_secs(every);
         }
 
         let mut ve = vedirect::Frame::default();
@@ -74,7 +94,7 @@ fn main() -> anyhow::Result<()> {
         if ve.valid() {
             match vedirect::Response::try_from(&ve) {
                 Ok(r) => {
-                    println!("frame: {:?}", r);
+                    info!("frame: {:?}", r);
                     if let vedirect::Response::Update {
                         item, flags, value, ..
                     } = r

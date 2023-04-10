@@ -1,5 +1,6 @@
 use core::array::TryFromSliceError;
 use core::convert::TryFrom;
+use derive_more::Display;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 use thiserror::Error;
 
@@ -52,7 +53,7 @@ pub enum ProductId {
 }
 
 #[repr(u16)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash, Display)]
 pub enum ItemId {
     Product = 0x0100,
     Group = 0x0104,
@@ -408,7 +409,7 @@ impl From<&Command> for Frame {
     }
 }
 
-#[derive(Default, Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Default, Debug, Clone, Eq, PartialEq, Hash, Display)]
 pub enum Value {
     #[default]
     Empty,
@@ -419,6 +420,7 @@ pub enum Value {
     U32(u32),
     I32(i32),
     Ascii(String),
+    #[display(fmt = "")]
     Other(Vec<u8>),
 }
 
