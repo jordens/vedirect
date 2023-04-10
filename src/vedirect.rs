@@ -142,6 +142,7 @@ enum State {
     Start,
     Low,
     High,
+    Text,
 }
 
 #[derive(Default, Clone, Eq, PartialEq, Debug)]
@@ -195,6 +196,10 @@ impl<'a> FrameDe<'a> {
                     self.frame.data.clear();
                     self.frame.data.push(0);
                     self.state = State::Low;
+                } else {
+                    // text
+                    self.frame.data.push(c);
+                    self.state = State::Text;
                 }
             }
             State::Low => {
@@ -209,6 +214,12 @@ impl<'a> FrameDe<'a> {
                     self.frame.data.push(nibble(c)? << 4);
                     self.state = State::Low;
                 }
+            }
+            State::Text => {
+                if self.frame.data.ends_with(b"\nChecksum\t") {
+                    self.state = State::Start;
+                }
+                self.frame.data.push(c);
             }
         };
         Ok(())
@@ -272,6 +283,7 @@ impl<'a> Iterator for FrameSer<'a> {
                     hex(self.frame.data[self.pos] >> 4).unwrap()
                 }
             }
+            State::Text => unreachable!(),
         })
     }
 }
