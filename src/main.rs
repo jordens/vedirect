@@ -1,10 +1,12 @@
+use env_logger::{Builder, Env};
 use log::{info, warn};
 use std::io::prelude::*;
 use std::time::{Duration, Instant};
 
 pub mod vedirect;
+use vedirect::{Command, Frame, ItemId, Response, Value};
 
-type Cache = std::collections::HashMap<vedirect::ItemId, vedirect::Value>;
+type Cache = std::collections::HashMap<ItemId, Value>;
 
 fn idb(msg: &Cache, station: &str) -> String {
     let mut s = String::new();
@@ -23,8 +25,7 @@ fn idb(msg: &Cache, station: &str) -> String {
 
 fn main() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("vedirect=warn"))
-        .init();
+    Builder::from_env(Env::default().default_filter_or("warn")).init();
 
     let mut args = pico_args::Arguments::from_env();
     let mut dev = serialport::new(
@@ -50,9 +51,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut cache = Cache::new();
 
-    let ping = vedirect::Frame::try_from(&vedirect::Command::Ping)?
-        .ser()
-        .collect::<Vec<u8>>();
+    let ping = Frame::try_from(&Command::Ping)?.ser().collect::<Vec<u8>>();
     let mut next = Instant::now();
 
     loop {
@@ -69,7 +68,7 @@ fn main() -> anyhow::Result<()> {
             next += Duration::from_secs(every);
         }
 
-        let mut ve = vedirect::Frame::default();
+        let mut ve = Frame::default();
         {
             let mut de = ve.de();
             let mut buf = [0; 1];
@@ -92,10 +91,10 @@ fn main() -> anyhow::Result<()> {
             }
         };
         if ve.valid() {
-            match vedirect::Response::try_from(&ve) {
+            match Response::try_from(&ve) {
                 Ok(r) => {
                     info!("frame: {:?}", r);
-                    if let vedirect::Response::Update {
+                    if let Response::Update {
                         item, flags, value, ..
                     } = r
                     {
