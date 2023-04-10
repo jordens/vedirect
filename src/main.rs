@@ -1,4 +1,3 @@
-use env_logger::{Builder, Env};
 use log::{info, warn};
 use std::io::prelude::*;
 use std::time::{Duration, Instant};
@@ -25,7 +24,7 @@ fn idb(msg: &Cache, station: &str) -> String {
 
 fn main() -> anyhow::Result<()> {
     #[cfg(debug_assertions)]
-    Builder::from_env(Env::default().default_filter_or("warn")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let mut args = pico_args::Arguments::from_env();
     let mut dev = serialport::new(

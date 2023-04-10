@@ -419,8 +419,9 @@ pub enum Value {
     I16(i16),
     U32(u32),
     I32(i32),
+    #[display(fmt = "\"0\"")]
     Ascii(String),
-    #[display(fmt = "")]
+    #[display(fmt = "0")]
     Other(Vec<u8>),
 }
 
