@@ -156,7 +156,7 @@ impl Frame {
     }
 
     pub fn valid(&self) -> bool {
-        self.checksum() == 0x55
+        !self.data.is_empty() && [0x55, 0x00].contains(&self.checksum())
     }
 
     pub fn de(&mut self) -> FrameDe {
@@ -226,14 +226,14 @@ impl<'a> FrameDe<'a> {
     }
 
     pub fn done(&self) -> bool {
-        self.state == State::Start && !self.frame.data.is_empty()
+        self.state == State::Start
     }
 
     /*
        pub fn read<R: std::io::Read>(&mut self, read: R) -> bool {
            let mut buf = [0];
            read.read_exact(&mut buf)?;
-           Ok(self.done() && self.frame.valid())
+           Ok(self.done())
        }
     */
 }
@@ -388,8 +388,7 @@ impl Command {
             }
             _ => {}
         }
-        let check = f.data.iter().fold(0x55u8, |a, &e| a.wrapping_sub(e));
-        f.data.push(check);
+        f.data.push(0x55u8.wrapping_sub(f.checksum()));
         f
     }
 
