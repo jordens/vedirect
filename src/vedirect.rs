@@ -234,16 +234,16 @@ impl<'a> FrameDe<'a> {
         self.state == State::Start
     }
 
-    pub fn read<R: std::io::Read>(&mut self, read: &mut R) -> Result<(), VeDirectError> {
+    pub fn read<R: std::io::Read>(&mut self, read: &mut R) -> Result<bool, VeDirectError> {
         let mut buf = [0];
         while !self.done() {
             if read.read(&mut buf)? > 0 {
                 self.push(buf[0])?
             } else {
-                break; // EOF?
+                return Ok(false); // EOF
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
