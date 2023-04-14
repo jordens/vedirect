@@ -95,7 +95,7 @@ pub enum ItemId {
     BatteryMaximumCurrent = 0xedf0,
 }
 
-#[derive(Error, Debug, Copy, Clone)]
+#[derive(Error, Debug)]
 pub enum VeDirectError {
     #[error("Invalid hex data `{0}`")]
     Hex(u8),
@@ -113,6 +113,8 @@ pub enum VeDirectError {
     Flags,
     #[error("Item Id")]
     Item(#[from] TryFromPrimitiveError<ItemId>),
+    #[error("IO error")]
+    IO(#[from] std::io::Error),
 }
 
 fn nibble(c: u8) -> Result<u8, VeDirectError> {
@@ -141,8 +143,8 @@ fn hex(c: u8) -> Result<u8, VeDirectError> {
 enum State {
     #[default]
     Start,
-    Low,
-    High,
+    LowNibble,
+    HighNibble,
     Text,
 }
 
@@ -193,27 +195,29 @@ impl<'a> FrameDe<'a> {
     pub fn push(&mut self, c: u8) -> Result<(), VeDirectError> {
         match self.state {
             State::Start => {
+                self.frame.data.clear();
                 if c == b':' {
-                    self.frame.data.clear();
-                    self.frame.data.push(0);
-                    self.state = State::Low;
+                    // hex
+                    self.frame.data.push(0); // id high nibble is 0
+                    self.state = State::LowNibble;
                 } else {
                     // text
+                    self.frame.data.clear();
                     self.frame.data.push(c);
                     self.state = State::Text;
                 }
             }
-            State::Low => {
+            State::LowNibble => {
                 let x = self.frame.data.last_mut().unwrap();
                 *x |= nibble(c)?;
-                self.state = State::High;
+                self.state = State::HighNibble;
             }
-            State::High => {
+            State::HighNibble => {
                 if c == b'\n' {
                     self.state = State::Start;
                 } else {
                     self.frame.data.push(nibble(c)? << 4);
-                    self.state = State::Low;
+                    self.state = State::LowNibble;
                 }
             }
             State::Text => {
@@ -230,13 +234,17 @@ impl<'a> FrameDe<'a> {
         self.state == State::Start
     }
 
-    /*
-       pub fn read<R: std::io::Read>(&mut self, read: R) -> bool {
-           let mut buf = [0];
-           read.read_exact(&mut buf)?;
-           Ok(self.done())
-       }
-    */
+    pub fn read<R: std::io::Read>(&mut self, read: &mut R) -> Result<(), VeDirectError> {
+        let mut buf = [0];
+        while !self.done() {
+            if read.read(&mut buf)? > 0 {
+                self.push(buf[0])?
+            } else {
+                break; // EOF?
+            }
+        }
+        Ok(())
+    }
 }
 
 impl TryFrom<&[u8]> for Frame {
@@ -267,20 +275,20 @@ impl<'a> Iterator for FrameSer<'a> {
                 if self.pos > 0 {
                     return None;
                 }
-                self.state = State::Low;
+                self.state = State::LowNibble;
                 b':'
             }
-            State::Low => {
-                self.state = State::High;
+            State::LowNibble => {
+                self.state = State::HighNibble;
                 self.pos += 1;
                 hex(self.frame.data[self.pos - 1] & 0xf).unwrap()
             }
-            State::High => {
+            State::HighNibble => {
                 if self.pos == self.frame.data.len() {
                     self.state = State::Start;
                     b'\n'
                 } else {
-                    self.state = State::Low;
+                    self.state = State::LowNibble;
                     hex(self.frame.data[self.pos] >> 4).unwrap()
                 }
             }

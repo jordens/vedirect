@@ -13,9 +13,13 @@ fn idb(msg: &Cache, station: &str) -> String {
     s.push_str(station);
     s.push(' ');
     for (key, value) in msg.iter() {
-        s.push_str(&format!("{}", key));
+        let v = value.to_string();
+        if v.is_empty() {
+            continue;
+        }
+        s.push_str(&key.to_string());
         s.push('=');
-        s.push_str(&format!("{}", value));
+        s.push_str(&v);
         s.push(',');
     }
     s.pop();
@@ -46,7 +50,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| "0.0.0.0:0".to_string()),
     )?;
     let target: Option<std::net::SocketAddr> = args.opt_value_from_str("--target")?;
-    let every = args.opt_value_from_str("--every")?.unwrap_or(10);
+    let every = args.opt_value_from_str("--every")?.unwrap_or(50);
 
     let mut cache = Cache::new();
 
@@ -84,7 +88,7 @@ fn main() -> anyhow::Result<()> {
                             return Ok(()); // EOF?
                         }
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
                     Err(e) => Err(e)?,
                 }
             }
