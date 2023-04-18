@@ -2,7 +2,7 @@ use core::array::TryFromSliceError;
 use core::convert::TryFrom;
 use derive_more::Display;
 use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TryFromPrimitive, Hash)]
@@ -95,8 +95,8 @@ pub enum ItemId {
     BatteryMaximumCurrent = 0xedf0,
 }
 
-#[derive(Error, Debug)]
-pub enum VeDirectError {
+#[derive(ThisError, Debug)]
+pub enum Error {
     #[error("Invalid hex data `{0}`")]
     Hex(u8),
     #[error("Too mich or too little data")]
@@ -117,7 +117,7 @@ pub enum VeDirectError {
     IO(#[from] std::io::Error),
 }
 
-fn nibble(c: u8) -> Result<u8, VeDirectError> {
+fn nibble(c: u8) -> Result<u8, Error> {
     if c.is_ascii_digit() {
         Ok(c - b'0')
     } else if (b'A'..=b'F').contains(&c) {
@@ -125,17 +125,17 @@ fn nibble(c: u8) -> Result<u8, VeDirectError> {
     } else if (b'a'..=b'f').contains(&c) {
         Ok(c - b'a' + 10)
     } else {
-        Err(VeDirectError::Hex(c))
+        Err(Error::Hex(c))
     }
 }
 
-fn hex(c: u8) -> Result<u8, VeDirectError> {
+fn hex(c: u8) -> Result<u8, Error> {
     if (0x0..=0x9).contains(&c) {
         Ok(b'0' + c)
     } else if (0xA..=0xF).contains(&c) {
         Ok(b'A' + (c - 10))
     } else {
-        Err(VeDirectError::Hex(c))
+        Err(Error::Hex(c))
     }
 }
 
@@ -192,7 +192,7 @@ pub struct FrameSer<'a> {
 }
 
 impl<'a> FrameDe<'a> {
-    pub fn push(&mut self, c: u8) -> Result<(), VeDirectError> {
+    pub fn push(&mut self, c: u8) -> Result<(), Error> {
         match self.state {
             State::Start => {
                 self.frame.data.clear();
@@ -234,7 +234,7 @@ impl<'a> FrameDe<'a> {
         self.state == State::Start
     }
 
-    pub fn read<R: std::io::Read>(&mut self, read: &mut R) -> Result<bool, VeDirectError> {
+    pub fn read<R: std::io::Read>(&mut self, read: &mut R) -> Result<bool, Error> {
         let mut buf = [0];
         while !self.done() {
             if read.read(&mut buf)? > 0 {
@@ -248,18 +248,18 @@ impl<'a> FrameDe<'a> {
 }
 
 impl TryFrom<&[u8]> for Frame {
-    type Error = VeDirectError;
+    type Error = Error;
 
-    fn try_from(value: &[u8]) -> Result<Frame, VeDirectError> {
+    fn try_from(value: &[u8]) -> Result<Frame, Error> {
         let mut f = Frame::default();
         let mut d = f.de();
         for c in value.iter() {
             d.push(*c)?;
         }
         if !d.done() {
-            Err(VeDirectError::Length)
+            Err(Error::Length)
         } else if !f.valid() {
-            Err(VeDirectError::Checksum)
+            Err(Error::Checksum)
         } else {
             Ok(f)
         }
@@ -320,12 +320,12 @@ fn bcd_to_bin(c: u8) -> u8 {
 }
 
 impl TryFrom<&Frame> for Response {
-    type Error = VeDirectError;
+    type Error = Error;
 
-    fn try_from(frame: &Frame) -> Result<Self, VeDirectError> {
+    fn try_from(frame: &Frame) -> Result<Self, Error> {
         let data = &frame.data[1..frame.data.len() - 1];
         if !frame.valid() {
-            return Err(VeDirectError::Checksum);
+            return Err(Error::Checksum);
         }
         Ok(match ResponseId::try_from(frame.data[0])? {
             ResponseId::Done => Self::Done(Value::guess(data)),
@@ -339,7 +339,7 @@ impl TryFrom<&Frame> for Response {
             typ @ (ResponseId::Get | ResponseId::Set | ResponseId::Async) => Self::Update {
                 typ,
                 item: u16::from_le_bytes(data[..2].try_into()?).try_into()?,
-                flags: Flags::from_bits(data[2]).ok_or(VeDirectError::Flags)?,
+                flags: Flags::from_bits(data[2]).ok_or(Error::Flags)?,
                 value: Value::guess(&data[3..]),
             },
         })

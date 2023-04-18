@@ -3,7 +3,7 @@ use std::io::prelude::*;
 use std::time::{Duration, Instant};
 
 pub mod vedirect;
-use vedirect::{Command, Frame, ItemId, Response, Value};
+use vedirect::{Command, Error, Frame, ItemId, Response, Value};
 
 type Cache = std::collections::HashMap<ItemId, Value>;
 
@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
     let ping = Frame::try_from(&Command::Ping)?.ser().collect::<Vec<u8>>();
     let mut next = Instant::now();
 
+    let mut ve = Frame::default();
     loop {
         if next <= Instant::now() {
             if !cache.is_empty() {
@@ -71,45 +72,28 @@ fn main() -> anyhow::Result<()> {
             next += Duration::from_secs(every);
         }
 
-        let mut ve = Frame::default();
-        {
-            let mut de = ve.de();
-            let mut buf = [0; 1];
-            loop {
-                match dev.read(&mut buf) {
-                    Ok(n) => {
-                        if n > 0 {
-                            if let Err(e) = de.push(buf[0]) {
-                                warn!("invalid data `{:?}`: {:?}", buf, e);
-                            } else if de.done() {
-                                break;
-                            }
-                        } else {
-                            return Ok(()); // EOF?
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
-                    Err(e) => Err(e)?,
-                }
-            }
-        };
-        if ve.valid() {
-            match Response::try_from(&ve) {
-                Ok(r) => {
-                    info!("frame: {:?}", r);
-                    if let Response::Update {
-                        item, flags, value, ..
-                    } = r
-                    {
-                        if flags.is_empty() {
-                            cache.insert(item, value);
-                        }
+        match ve.de().read(&mut dev) {
+            Ok(true) => {}
+            Err(Error::IO(e)) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(Error::Hex(c)) => warn!("invalid data `{:?}`", c),
+            Ok(false) => break, // EOF?
+            Err(e) => Err(e)?,
+        }
+        match Response::try_from(&ve) {
+            Ok(r) => {
+                info!("frame: {:?}", r);
+                if let Response::Update {
+                    item, flags, value, ..
+                } = r
+                {
+                    if flags.is_empty() {
+                        cache.insert(item, value);
                     }
                 }
-                Err(e) => warn!("invalid frame: `{:?}`", e),
             }
+            Err(e) => warn!("invalid frame: `{:?}`", e),
         }
     }
 
-    // Ok(())
+    Ok(())
 }
